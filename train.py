@@ -24,6 +24,7 @@ def visualize_random_sketch_predictions(
     n=20,
 ):
     """Save a grid (4x5) of random sketches with gt/pred class names."""
+    from collections import Counter
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -60,6 +61,22 @@ def visualize_random_sketch_predictions(
     z = model.encode_image_for_retrieval(x, model._seen_names, model._templates)  # (N, D)
     logits = z @ class_embeds.t()  # (N, C)
     pred = torch.argmax(logits, dim=-1).detach().cpu().tolist()
+
+    # Diagnostics: NaN/Inf and distribution
+    if (not torch.isfinite(z).all()) or (not torch.isfinite(class_embeds).all()) or (not torch.isfinite(logits).all()):
+        print(
+            "[Viz][Warn] Non-finite values detected: "
+            f"z_finite={bool(torch.isfinite(z).all())}, "
+            f"text_finite={bool(torch.isfinite(class_embeds).all())}, "
+            f"logits_finite={bool(torch.isfinite(logits).all())}"
+        )
+    gt_counts = Counter(ys)
+    pred_counts = Counter(pred)
+    top_pred = pred_counts.most_common(5)
+    top_pred_named = [(class_names[i] if 0 <= i < len(class_names) else str(i), c) for i, c in top_pred]
+    unique_gt = len(gt_counts)
+    unique_pred = len(pred_counts)
+    print(f"[Viz] sample_unique_gt={unique_gt} | sample_unique_pred={unique_pred} | top_pred={top_pred_named}")
 
     mean = torch.tensor(CLIP_MEAN, dtype=x.dtype, device=device).view(1, 3, 1, 1)
     std = torch.tensor(CLIP_STD, dtype=x.dtype, device=device).view(1, 3, 1, 1)
