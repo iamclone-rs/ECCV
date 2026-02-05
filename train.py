@@ -1,10 +1,11 @@
 import os
+import random
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from configs.tuberlin import UNSEEN_CLASSES, TEMPLATES
-from data.transforms import build_train_transform, build_test_transform
+from data.transforms import build_train_transform, build_test_transform, CLIP_MEAN, CLIP_STD
 from data.sbir_dataset import SBIRTripletTrain, SBIREvalIndex, build_seen_unseen
 from models.splip_sbir import SpLIP_SBIR
 from eval.sbir_eval import eval_zs, eval_gzs
@@ -12,6 +13,78 @@ from eval.sbir_eval import eval_zs, eval_gzs
 def list_all_classes(root):
     ph = os.path.join(root, "photo")
     return sorted([d for d in os.listdir(ph) if os.path.isdir(os.path.join(ph, d))])
+
+
+@torch.no_grad()
+def visualize_random_sketch_predictions(
+    model,
+    q_ds,
+    templates,
+    out_path,
+    n=20,
+):
+    """Save a grid (4x5) of random sketches with gt/pred class names."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[Viz] Skip (matplotlib unavailable): {e}")
+        return
+
+    device = next(model.parameters()).device
+    class_names = list(getattr(q_ds, "classes", []))
+    if len(class_names) == 0:
+        print("[Viz] Skip (q_ds.classes missing/empty)")
+        return
+
+    # Build text embeddings for unseen classes (same convention as training: use photo template)
+    prompts = [templates["photo"].format(c) for c in class_names]
+    tok = model.tokenizer(prompts).to(device)
+    class_embeds = model.encode_text_plain(tok)  # (C, D), normalized
+
+    n = min(int(n), len(q_ds))
+    if n <= 0:
+        print("[Viz] Skip (dataset empty)")
+        return
+
+    idxs = random.sample(range(len(q_ds)), k=n) if len(q_ds) >= n else list(range(len(q_ds)))
+    xs = []
+    ys = []
+    for i in idxs:
+        x, y = q_ds[i]
+        xs.append(x)
+        ys.append(int(y))
+    x = torch.stack(xs, 0).to(device)
+
+    z = model.encode_image_for_retrieval(x, model._seen_names, model._templates)  # (N, D)
+    logits = z @ class_embeds.t()  # (N, C)
+    pred = torch.argmax(logits, dim=-1).detach().cpu().tolist()
+
+    mean = torch.tensor(CLIP_MEAN, dtype=x.dtype, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(CLIP_STD, dtype=x.dtype, device=device).view(1, 3, 1, 1)
+    x_vis = (x * std + mean).clamp(0, 1).detach().cpu()
+
+    rows, cols = 4, 5
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.2))
+    axes = axes.flatten()
+    for j in range(rows * cols):
+        ax = axes[j]
+        ax.axis("off")
+        if j >= n:
+            continue
+        img = x_vis[j].permute(1, 2, 0).numpy()
+        gt_name = class_names[ys[j]] if 0 <= ys[j] < len(class_names) else str(ys[j])
+        pr_name = class_names[pred[j]] if 0 <= pred[j] < len(class_names) else str(pred[j])
+        ok = (ys[j] == pred[j])
+        ax.imshow(img)
+        ax.set_title(f"gt: {gt_name}\npred: {pr_name}{' ✓' if ok else ''}", fontsize=10)
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[Viz] Saved {out_path}")
 
 def main(
     root,
@@ -24,6 +97,8 @@ def main(
     num_workers=4,
     eval_every=1,
     device=None,
+    viz_n=20,
+    viz_dir="viz",
 ):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     all_classes = list_all_classes(root)
@@ -96,6 +171,10 @@ def main(
             f"GZS mAP@all={gzs['mAP@all']:.4f}, P@100={gzs['P@100']:.4f}"
         )
 
+        # Visualize 20 random unseen sketches + predictions
+        viz_path = os.path.join(viz_dir, f"epoch_{ep:03d}_unseen_sketch_preds.png")
+        visualize_random_sketch_predictions(model, q_unseen, TEMPLATES, viz_path, n=viz_n)
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
@@ -108,5 +187,7 @@ if __name__ == "__main__":
     ap.add_argument("--image_size", type=int, default=224)
     ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--eval_every", type=int, default=1)
+    ap.add_argument("--viz_n", type=int, default=20)
+    ap.add_argument("--viz_dir", type=str, default="viz")
     args = ap.parse_args()
     main(**vars(args))
