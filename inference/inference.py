@@ -26,6 +26,8 @@ import numpy as np
 from PIL import Image, ImageOps
 from torch.nn import functional as F
 from torchvision import transforms
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 
 # ── make project root importable ──────────────────────────────────────
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -177,6 +179,70 @@ def save_results(results, sketch_path, output_dir):
     print(f"\n[Saved] Results written to {json_path}")
 
 
+# ── Visualize results ─────────────────────────────────────────────────
+def visualize_results(results, sketch_path, output_dir):
+    """
+    Draw a horizontal strip: [Query Sketch] | [Top-1] [Top-2] ... [Top-K]
+    Each retrieved photo is annotated with its score and a ✓ / ✗
+    depending on whether its category matches the sketch category.
+    """
+    # Infer query category from sketch path:  .../sketch/<category>/filename
+    sketch_category = os.path.basename(os.path.dirname(sketch_path))
+
+    k = len(results)
+    n_cols = 1 + k  # query + retrieved
+    fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3.5))
+
+    # ── Query sketch ──────────────────────────────────────────────
+    query_img = Image.open(sketch_path).convert("RGB")
+    axes[0].imshow(query_img)
+    axes[0].set_title(f"Query\n({sketch_category})", fontsize=11, fontweight="bold")
+    axes[0].axis("off")
+    # Blue border for query
+    for spine in axes[0].spines.values():
+        spine.set_visible(True)
+        spine.set_edgecolor("#2196F3")
+        spine.set_linewidth(3)
+
+    # ── Retrieved photos ──────────────────────────────────────────
+    for i, item in enumerate(results):
+        ax = axes[i + 1]
+        photo_img = Image.open(item["path"]).convert("RGB")
+        photo_category = os.path.basename(os.path.dirname(item["path"]))
+        is_correct = (photo_category == sketch_category)
+
+        ax.imshow(photo_img)
+        score_str = f"{item['score']:.4f}"
+
+        # Title: rank + score
+        ax.set_title(f"Top-{i+1}\n{score_str}", fontsize=10)
+        ax.axis("off")
+
+        # ✓ / ✗ mark
+        mark = "✓" if is_correct else "✗"
+        color = "#4CAF50" if is_correct else "#F44336"
+        ax.text(
+            0.5, -0.08, mark,
+            transform=ax.transAxes,
+            fontsize=22, fontweight="bold",
+            color=color, ha="center", va="top",
+        )
+
+        # Border color
+        border_color = "#4CAF50" if is_correct else "#F44336"
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor(border_color)
+            spine.set_linewidth(3)
+
+    plt.tight_layout()
+    os.makedirs(output_dir, exist_ok=True)
+    fig_path = os.path.join(output_dir, "retrieval_vis.png")
+    plt.savefig(fig_path, dpi=200, bbox_inches="tight", pad_inches=0.1)
+    plt.close()
+    print(f"[Saved] Visualization saved to {fig_path}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="ZS-SBIR Inference: sketch → top-5 photos")
@@ -226,6 +292,7 @@ def main():
     print(f"{'='*60}")
 
     save_results(results, args.sketch_path, args.output_dir)
+    visualize_results(results, args.sketch_path, args.output_dir)
 
 
 if __name__ == "__main__":
