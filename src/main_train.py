@@ -1,5 +1,18 @@
 import os
+import time
+
+STARTED = time.perf_counter()
+
+
+def startup_log(message):
+    print(f'[startup +{time.perf_counter() - STARTED:.1f}s] {message}', flush=True)
+
+
+if __name__ == '__main__':
+    startup_log('Importing PyTorch...')
 import torch
+if __name__ == '__main__':
+    startup_log(f'PyTorch {torch.__version__} imported. Importing Lightning...')
 import numpy as np
 import random
 import argparse
@@ -10,9 +23,13 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint 
 
+if __name__ == '__main__':
+    startup_log('Lightning imported. Importing dataset/model modules...')
 from src.sketchy_dataset import TrainDataset, ValidDataset
 from src.model import ZS_SBIR
 from src.utils import get_all_categories
+if __name__ == '__main__':
+    startup_log('Project modules imported.')
 
 def get_datasets(args):
     seed = args.seed
@@ -21,13 +38,20 @@ def get_datasets(args):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     
+    startup_log(f'Indexing training images under {args.root}...')
     train_dataset = TrainDataset(args, args.proportion)
+    startup_log(f'Train index ready: {len(train_dataset)} sketches, {len(train_dataset.all_categories)} classes.')
+    startup_log('Indexing validation sketches...')
     val_sketch = ValidDataset(args, mode='sketch')
+    startup_log(f'Validation sketch index ready: {len(val_sketch)} images.')
+    startup_log('Indexing validation photos...')
     val_photo = ValidDataset(args)
+    startup_log(f'Validation photo index ready: {len(val_photo)} images.')
 
     train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.workers, shuffle=True, drop_last=True)
     val_sketch_loader = DataLoader(dataset=val_sketch, batch_size=args.test_batch_size, num_workers=args.workers, shuffle=False)
     val_photo_loader = DataLoader(dataset=val_photo, batch_size=args.test_batch_size, num_workers=args.workers, shuffle=False)
+    startup_log(f'DataLoaders configured: workers={args.workers}, train batches={len(train_loader)}.')
 
     return train_loader, val_sketch_loader, val_photo_loader
 
@@ -86,6 +110,8 @@ if __name__ == "__main__":
     parser.add_argument('--exp_name', type=str, default='Co_prompt')
     
     args = parser.parse_args()
+    args.startup_logs = True
+    startup_log(f'Arguments parsed: dataset={args.dataset}, root={args.root}, workers={args.workers}.')
     if args.temperature <= 0 or args.triplet_margin <= 0:
         parser.error('temperature and triplet_margin must be positive')
     if args.batch_size < 2 or args.eval_query_batch_size < 1:
@@ -94,6 +120,10 @@ if __name__ == "__main__":
         parser.error(f'Checkpoint does not exist: {args.ckpt_path}')
     if args.resume and not args.ckpt_path:
         parser.error('--resume requires --ckpt_path')
+    startup_log('Checking CUDA availability...')
+    if not torch.cuda.is_available():
+        parser.error('CUDA is unavailable. Enable a GPU accelerator in the Kaggle notebook.')
+    startup_log(f'CUDA ready: {torch.cuda.get_device_name(0)}.')
     pl_root = Path(args.output_dir or '.')
     logger = TensorBoardLogger(str(pl_root / 'tb_logs'), name=args.exp_name)
     csv_logger = CSVLogger(str(pl_root / 'csv_logs'), name=args.exp_name)
@@ -124,6 +154,7 @@ if __name__ == "__main__":
         'test_sketches': len(val_sketch_loader.dataset),
         'gallery_photos': len(val_photo_loader.dataset)}, indent=2), encoding='utf-8')
     print(f'Seen/unseen classes: {len(train_loader.dataset.all_categories)}/{len(val_sketch_loader.dataset.unseen_classes)}')
+    startup_log('Creating Lightning Trainer...')
     trainer = Trainer(accelerator='gpu', devices=1, 
         min_epochs=1, max_epochs=args.epochs,
         benchmark=True,
@@ -136,7 +167,8 @@ if __name__ == "__main__":
         callbacks=[] if args.smoke_test else [checkpoint_callback]
     )
 
-    classnames = get_all_categories(args)
+    classnames = train_loader.dataset.all_categories
+    startup_log('Building CLIP model and prompt/adapters...')
  
     if ckpt_path is None or args.resume:
         model = ZS_SBIR(args=args, classname=classnames)
@@ -156,5 +188,6 @@ if __name__ == "__main__":
         model = ZS_SBIR(args=args, classname=classnames)  # classnames = 220
         missing, unexpected = model.load_state_dict(sd, strict=False)
 
+    startup_log('Model ready. Entering trainer.fit; waiting for the first training batch...')
     trainer.fit(model, train_loader, [val_sketch_loader, val_photo_loader],
                 ckpt_path=ckpt_path if args.resume else None)

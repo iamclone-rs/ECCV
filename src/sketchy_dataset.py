@@ -39,7 +39,9 @@ class TrainDataset(torch.utils.data.Dataset):
         self.all_sketches_path = []
         self.all_photos_path = {}
 
-        for category in self.all_categories:
+        for index, category in enumerate(self.all_categories, start=1):
+            if getattr(args, 'startup_logs', False):
+                print(f'[data train {index}/{len(self.all_categories)}] Indexing {category}...', flush=True)
             sketch_paths = image_paths(os.path.join(self.args.root, 'sketch', category))
             photo_paths = image_paths(os.path.join(self.args.root, 'photo', category))
             if not sketch_paths or not photo_paths:
@@ -54,6 +56,8 @@ class TrainDataset(torch.utils.data.Dataset):
             
             self.all_sketches_path.extend(sketch_paths)
             self.all_photos_path[category] = photo_paths
+            if getattr(args, 'startup_logs', False):
+                print(f'  {len(sketch_paths)} sketches, {len(photo_paths)} photos.', flush=True)
 
     def __len__(self):
         return len(self.all_sketches_path)
@@ -103,7 +107,9 @@ class ValidDataset(torch.utils.data.Dataset):
         self.label_classes = sorted(set(self.unseen_classes) | set(self.global_categories))
             
         unseen_paths = []
-        for category in self.unseen_classes:
+        for index, category in enumerate(self.unseen_classes, start=1):
+            if getattr(args, 'startup_logs', False):
+                print(f'[data {mode} {index}/{len(self.unseen_classes)}] Indexing {category}...', flush=True)
             if self.mode == 'photo':
                 paths = image_paths(os.path.join(self.args.root, 'photo', category))
             else:
@@ -111,6 +117,8 @@ class ValidDataset(torch.utils.data.Dataset):
             if not paths:
                 raise ValueError(f'Empty validation class ({mode}): {category}')
             unseen_paths.extend(paths)
+            if getattr(args, 'startup_logs', False):
+                print(f'  {len(paths)} images.', flush=True)
 
         self.paths = list(unseen_paths)
 

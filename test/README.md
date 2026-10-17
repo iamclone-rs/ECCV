@@ -91,9 +91,10 @@ trong bundle. Các thư viện còn lại vẫn được kiểm tra/cài từ wh
 ## 3. Kiểm tra và train
 
 Cell thứ hai dùng nội dung `test/kaggle_train.ipy`, với lệnh `!python -u -m
-src.main_train` và đầy đủ tham số ngay trong cell. Bước kiểm tra tự tìm root chứa
-`sketch/` và `photo/`, xác nhận đủ 80/30 lớp, lớp nào cũng có ảnh, và ghi
-`/kaggle/working/quickdraw_preflight.json` trước khi khởi tạo model.
+src.main_train` và đầy đủ tham số ngay trong cell. Đường dẫn đã đặt theo dataset
+bạn cung cấp: `/kaggle/input/datasets/b20dccn616nguynhutun/quickdraw`.
+Không chạy bước tự tìm và liệt kê toàn bộ dữ liệu lần thứ hai trước khi train.
+Entrypoint vẫn kiểm tra split và lớp rỗng khi tạo dataset.
 
 Nếu cần chọn đường dẫn thủ công:
 
@@ -104,6 +105,19 @@ Nếu cần chọn đường dẫn thủ công:
 !python -u test/kaggle_train.py --smoke_test --exp_name seco_quickdraw_smoke
 !python -u test/kaggle_train.py
 ```
+
+Nếu đang dùng bundle cũ và cần áp dụng các sửa đổi startup mà không có Internet,
+dán toàn bộ `test/kaggle_update_source.py` vào một cell **sau bước offline setup**.
+Cell này sao lưu các file được thay thế, rồi cập nhật source trong
+`/kaggle/working/ECCV`; không tải lại thư viện hoặc weights. Sau đó chạy lại lệnh
+train. Khi source tiếp tục thay đổi, tạo lại cell cập nhật bằng
+`python test/build_kaggle_update.py` trên máy cục bộ.
+
+Lệnh train in log trước/sau import PyTorch, Lightning, từng lớp đang index,
+nạp CLIP, tạo model, nhận batch đầu và hoàn thành optimizer step đầu.
+Nếu dừng ở `Waiting for DataLoader`, thử `--workers 0 --smoke_test` trước,
+rồi đặt `--workers 2` cho lần chạy đầy đủ. `--workers 8` không đảm bảo nhanh hơn
+khi nhiều worker cùng đọc Kaggle Input.
 
 Batch train mặc định giữ 32 theo bài. Nếu GPU hết bộ nhớ, thử giảm
 `--test_batch_size 64` khi lỗi ở validation; nếu lỗi trong train, giảm

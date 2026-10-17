@@ -143,7 +143,11 @@ class ZS_SBIR(pl.LightningModule):
         self.distance_fn = lambda x, y: F.cosine_similarity(x, y)
         self.best_metric = 1e-3
         
+        if getattr(args, 'startup_logs', False):
+            print('[model] Creating visual branches, prompts, adapters and frozen reference...', flush=True)
         self.model = CustomCLIP(cfg=args, clip_model=clip_model, clip_model_distill=clip_model_distill)
+        if getattr(args, 'startup_logs', False):
+            print('[model] All model branches ready.', flush=True)
     
         self.val_step_outputs_sk = []
         self.val_step_outputs_ph = []
@@ -165,9 +169,23 @@ class ZS_SBIR(pl.LightningModule):
     
     def forward(self, data, classname):
         return self.model(data, classname)
+
+    def on_train_start(self):
+        if getattr(self.args, 'startup_logs', False):
+            print('[train] Model is on the GPU. Waiting for DataLoader to deliver the first batch...', flush=True)
+
+    def on_train_batch_start(self, batch, batch_idx):
+        if batch_idx == 0 and getattr(self.args, 'startup_logs', False):
+            print(f'[train] Epoch {self.current_epoch}: first batch received; starting forward/backward.', flush=True)
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if batch_idx == 0 and getattr(self.args, 'startup_logs', False):
+            print(f'[train] Epoch {self.current_epoch}: first optimizer step completed.', flush=True)
     
     def training_step(self, batch, batch_idx):
-        classname = get_all_categories(self.args)
+        # The split is fixed for this run. Do not stat remote class directories
+        # again on every optimizer step.
+        classname = self.classname
         features = self.forward(batch, classname)
         
         loss = loss_fn(self.args, self.model, features=features, mode='train')
@@ -176,7 +194,7 @@ class ZS_SBIR(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx, dataloader_idx):
         # classnames = get_all_categories(self.args, mode="test")
-        classnames = get_all_categories(self.args, mode="train")
+        classnames = self.classname
         image_tensor, label = batch
         if dataloader_idx == 0:
             feat = self.model.extract_feature(image_tensor, classname=classnames, type='sketch')

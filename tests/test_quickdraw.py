@@ -10,7 +10,7 @@ import torch
 from torch.nn import functional as F
 
 from src.data_config import UNSEEN_CLASSES
-from src.dataset_protocol import category_split
+from src.dataset_protocol import category_split, image_paths
 from src.losses import loss_fn
 from src.retrieval import retrieval_metrics
 from src.sketchy_dataset import TrainDataset, ValidDataset
@@ -18,6 +18,41 @@ from PIL import Image
 
 
 class QuickDrawTests(unittest.TestCase):
+    def test_image_index_filters_files_without_path_is_file_calls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / 'one.PNG'
+            image.write_bytes(b'image')
+            (root / 'README.txt').write_text('metadata')
+            (root / 'folder.png').mkdir()
+            with patch.object(Path, 'is_file', side_effect=AssertionError('Per-image Path.stat call')):
+                self.assertEqual(image_paths(root), [str(image)])
+
+    def test_training_and_validation_reuse_cached_classnames(self):
+        from src.model import ZS_SBIR
+        from unittest.mock import Mock
+        model = ZS_SBIR.__new__(ZS_SBIR)
+        torch.nn.Module.__init__(model)
+        model.args = argparse.Namespace(visualize=False)
+        model.classname = ['seen_one', 'seen_two']
+        model.log = Mock()
+        model.forward = Mock(return_value='features')
+        model.model = torch.nn.Module()
+        model.model.extract_feature = Mock(return_value=torch.ones(2, 5))
+        model.val_step_outputs_sk = []
+        model.val_step_outputs_ph = []
+        batch = (torch.ones(2, 3, 4, 4), torch.tensor([0, 1]))
+        with patch('src.model.get_all_categories', side_effect=AssertionError('Repeated filesystem scan')), \
+                patch('src.model.loss_fn', return_value=torch.tensor(1.)):
+            model.training_step(batch, 0)
+            model.validation_step(batch, 0, 0)
+            model.validation_step(batch, 0, 1)
+        model.forward.assert_called_once_with(batch, model.classname)
+        self.assertEqual(len(model.val_step_outputs_sk), 1)
+        self.assertEqual(len(model.val_step_outputs_ph), 1)
+        for call in model.model.extract_feature.call_args_list:
+            self.assertEqual(call.kwargs['classname'], model.classname)
+
     def test_backbone_freezing_includes_attention_and_position_embeddings(self):
         from src.model import freeze_all_but_bn
         backbone = torch.nn.Module()

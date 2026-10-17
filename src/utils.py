@@ -46,6 +46,8 @@ def load_clip_to_cpu(cfg, design_details=None):
     model_path = getattr(cfg, 'clip_weights', '') or clip._download(url)
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f'CLIP checkpoint does not exist: {model_path}')
+    if getattr(cfg, 'startup_logs', False):
+        print(f'[model] Reading CLIP weights: {model_path}', flush=True)
 
     try:
         # loading JIT archive
@@ -63,7 +65,11 @@ def load_clip_to_cpu(cfg, design_details=None):
             "language_ctx": 0,
             "maple_length": cfg.n_ctx,
         }
+    if getattr(cfg, 'startup_logs', False):
+        print(f"[model] Building {design_details['trainer']} CLIP on CPU...", flush=True)
     model = clip.build_model(state_dict or model.state_dict(), design_details)
+    if getattr(cfg, 'startup_logs', False):
+        print(f"[model] {design_details['trainer']} CLIP ready.", flush=True)
 
     return model
 

@@ -1,17 +1,9 @@
 # Offline cell 2, after running kaggle_offline.py.
-# Optional, if detection finds multiple datasets:
-# %env QUICKDRAW_ROOT=/kaggle/input/<your-quickdraw-dataset>/QuickDraw
 
 %cd /kaggle/working/ECCV
 
-# Resolve and check the dataset before training.
-!python test/kaggle_train.py --check_only
-import json
-with open('/kaggle/working/quickdraw_preflight.json', encoding='utf-8') as file:
-    QUICKDRAW_ROOT = json.load(file)['root']
-
 !python -u -m src.main_train \
-    --root "{QUICKDRAW_ROOT}" \
+    --root /kaggle/input/datasets/b20dccn616nguynhutun/quickdraw \
     --dataset quickdraw \
     --use_classes 80 \
     --backbone ViT-B/32 \
@@ -41,10 +33,10 @@ with open('/kaggle/working/quickdraw_preflight.json', encoding='utf-8') as file:
     --progress
 
 # Check data without initializing a model:
-# !python test/kaggle_train.py --check_only
+# !python -u test/kaggle_train.py --root /kaggle/input/datasets/b20dccn616nguynhutun/quickdraw --check_only
 
 # Verify two training/validation batches before the full run:
-# !python -u test/kaggle_train.py --smoke_test --exp_name seco_quickdraw_smoke
+# !python -u test/kaggle_train.py --root /kaggle/input/datasets/b20dccn616nguynhutun/quickdraw --workers 0 --smoke_test --exp_name seco_quickdraw_smoke
 
 # Resume a later Kaggle session. Set epochs to the TOTAL desired epoch count.
 # !python -u test/kaggle_train.py --epochs 10 --ckpt_path /kaggle/input/<previous-output>/saved_models/seco_quickdraw/last.ckpt

@@ -2,6 +2,7 @@
 
 import random
 import re
+import os
 from pathlib import Path
 
 from src.data_config import GENERALIZED_CLASSES, UNSEEN_CLASSES
@@ -11,8 +12,12 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'}
 
 
 def image_paths(directory):
-    return sorted(str(p) for p in Path(directory).iterdir()
-                  if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
+    # DirEntry reuses file-type information from directory enumeration instead
+    # of issuing a separate Path.is_file() stat for every Kaggle Input image.
+    with os.scandir(directory) as entries:
+        return sorted(entry.path for entry in entries
+                      if os.path.splitext(entry.name)[1].lower() in IMAGE_EXTENSIONS
+                      and entry.is_file())
 
 
 def category_split(args):
