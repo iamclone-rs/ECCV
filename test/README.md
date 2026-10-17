@@ -73,6 +73,15 @@ checksum, cài wheels offline, copy source vào `/kaggle/working/ECCV`, đặt C
 weights vào `/kaggle/working/clip_cache/ViT-B-32.pt`.
 
 Nếu gắn nhiều bundle, đặt `ECCV_BUNDLE` trỏ tới đúng thư mục `offline_bundle`.
+Nếu muốn bỏ qua bước tự tìm, đặt biến này ngay trước cell offline:
+
+```python
+import os
+os.environ["ECCV_BUNDLE"] = "/kaggle/input/<notebook-output>/seco_quickdraw_<timestamp>/offline_bundle"
+```
+
+Script chỉ tìm trong các thư mục chứa output/input, bỏ qua cây `sketch/`,
+`photo/`, source và wheels. Mỗi thư mục đang tìm đều được in ra.
 Online/offline phải dùng cùng Python và PyTorch image; script kiểm tra điều này.
 
 ## 3. Kiểm tra và train

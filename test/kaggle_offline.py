@@ -1,7 +1,7 @@
 """Offline Kaggle cell 1: restore a bundle built by kaggle_online.py."""
 
 from pathlib import Path
-import glob
+from collections import deque
 import hashlib
 import json
 import os
@@ -35,6 +35,51 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def find_bundle_manifests(input_root=Path('/kaggle/input')):
+    """Search attachment containers, pruning datasets and bundle contents."""
+    excluded = {'sketch', 'sketches', 'photo', 'photos', 'images',
+                'source', 'wheels', 'clip_cache', '__pycache__'}
+    pending = deque([(Path(input_root), 0)])
+    candidates = []
+    visited = 0
+    seen = set()
+    while pending:
+        directory, depth = pending.popleft()
+        resolved = directory.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        visited += 1
+        if visited > 256:
+            raise RuntimeError('Bundle search reached 256 directories. Set ECCV_BUNDLE '
+                               'to the exact offline_bundle directory to skip scanning.')
+        log(f'Searching attachment container: {directory}')
+        manifest = directory / 'offline_bundle' / 'bundle_manifest.json'
+        if manifest.is_file():
+            log(f'Found bundle manifest: {manifest}')
+            candidates.append(manifest)
+            # Nothing deeper in this notebook output is needed.
+            continue
+        if directory.name == 'offline_bundle':
+            manifest = directory / 'bundle_manifest.json'
+            if manifest.is_file():
+                candidates.append(manifest)
+            continue
+        # Probe for dataset roots without listing classes or image files.
+        if (directory / 'sketch').is_dir() and (directory / 'photo').is_dir():
+            log(f'Skipping sketch/photo dataset: {directory}')
+            continue
+        if depth >= 8:
+            continue
+        with os.scandir(directory) as entries:
+            children = sorted(Path(entry.path) for entry in entries
+                              if not entry.name.startswith('.')
+                              and entry.name.lower() not in excluded
+                              and entry.is_dir())
+        pending.extend((child, depth + 1) for child in children)
+    return candidates
+
+
 def main():
     log('[1/7] Looking for the offline bundle (CPU/disk; training starts in the next cell).')
     selected = os.environ.get('ECCV_BUNDLE', '')
@@ -42,12 +87,7 @@ def main():
         log(f'Using ECCV_BUNDLE: {selected}')
         candidates = [Path(selected) / 'bundle_manifest.json']
     else:
-        candidates = []
-        # Bound the search depth; never walk the individual QuickDraw images.
-        for depth in range(1, 7):
-            log(f'Searching Kaggle inputs at depth {depth}/6...')
-            pattern = '/kaggle/input/' + '*/' * depth + 'offline_bundle/bundle_manifest.json'
-            candidates.extend(Path(p) for p in glob.glob(pattern))
+        candidates = find_bundle_manifests()
     log(f'Manifest files found: {len(set(candidates))}')
     matches = []
     for path in sorted(set(candidates)):
