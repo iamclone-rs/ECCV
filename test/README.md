@@ -82,7 +82,11 @@ os.environ["ECCV_BUNDLE"] = "/kaggle/input/<notebook-output>/seco_quickdraw_<tim
 
 Script chỉ tìm trong các thư mục chứa output/input, bỏ qua cây `sketch/`,
 `photo/`, source và wheels. Mỗi thư mục đang tìm đều được in ra.
-Online/offline phải dùng cùng Python và PyTorch image; script kiểm tra điều này.
+Online/offline phải dùng cùng phiên bản Python major/minor và cùng phiên bản
+phát hành PyTorch/torchvision. Hậu tố build có thể khác: bundle `2.11.0+cpu`
+vẫn dùng được với runtime `2.11.0+cu128`. Script giữ nguyên PyTorch CUDA đang
+cài trong notebook train, tạo constraints từ runtime thay vì ép dùng bản CPU
+trong bundle. Các thư viện còn lại vẫn được kiểm tra/cài từ wheels offline.
 
 ## 3. Kiểm tra và train
 

@@ -80,6 +80,29 @@ def find_bundle_manifests(input_root=Path('/kaggle/input')):
     return candidates
 
 
+def runtime_torch_constraints(expected_stack, working):
+    """Keep the runtime's installed builds; compare public release versions."""
+    from importlib.metadata import version
+    installed = {}
+    for name, expected in expected_stack.items():
+        actual = version(name)
+        log(f'  {name}: installed={actual}, bundle={expected}')
+        # +cpu and +cu128 describe different builds of the same release.
+        if actual.partition('+')[0] != expected.partition('+')[0]:
+            raise RuntimeError(f'{name} release differs: expected {expected}, got {actual}. '
+                               'Rebuild using the same Python/PyTorch release.')
+        installed[name] = actual
+        if actual != expected:
+            log(f'  Build suffix differs; keeping installed {name}=={actual}.')
+    working = Path(working)
+    working.mkdir(parents=True, exist_ok=True)
+    constraints = working / 'eccv_runtime_torch_constraints.txt'
+    constraints.write_text(''.join(f'{name}=={actual}\n' for name, actual in installed.items()),
+                           encoding='utf-8')
+    log(f'Runtime PyTorch constraints: {constraints}')
+    return constraints
+
+
 def main():
     log('[1/7] Looking for the offline bundle (CPU/disk; training starts in the next cell).')
     selected = os.environ.get('ECCV_BUNDLE', '')
@@ -118,18 +141,13 @@ def main():
         verified_bytes += record['size']
         log(f'  OK ({verified_bytes / 1024**2:.1f}/{total_bytes / 1024**2:.1f} MiB verified)')
     log('[3/7] Checking installed PyTorch versions...')
-    from importlib.metadata import version
-    for name, expected in manifest['torch_stack'].items():
-        actual = version(name)
-        log(f'  {name}: installed={actual}, expected={expected}')
-        if actual != expected:
-            raise RuntimeError(f'{name} version differs: expected {expected}, got {actual}. Rebuild on this Kaggle image.')
+    constraints = runtime_torch_constraints(manifest['torch_stack'], WORKING)
     log('[4/7] Installing dependencies from offline wheels; pip output follows...')
     log(f"Wheel directory: {bundle / 'wheels'}")
     WORKING.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-index', '--find-links',
                     str(bundle / 'wheels'), '--only-binary=:all:',
-                    '-c', str(bundle / 'requirements.txt'), '-c', str(bundle / 'torch_constraints.txt'),
+                    '-c', str(bundle / 'requirements.txt'), '-c', str(constraints),
                     *manifest['runtime_requirements']], cwd=WORKING, check=True)
     log('Offline dependencies installed.')
     log(f'[5/7] Copying source to {PROJECT}...')
