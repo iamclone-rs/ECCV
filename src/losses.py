@@ -34,7 +34,7 @@ def cross_loss(feature_1, feature_2, args):
     return nn.CrossEntropyLoss()(logits, labels)
 
 
-def nt_xent(features_view1: torch.Tensor, features_view2: torch.Tensor):
+def nt_xent(features_view1: torch.Tensor, features_view2: torch.Tensor, temperature=0.07):
     """
     NT-Xent for SimCLR
     features_view1, features_view2: (B, D)
@@ -42,7 +42,6 @@ def nt_xent(features_view1: torch.Tensor, features_view2: torch.Tensor):
     features_view1 = F.normalize(features_view1)
     features_view2 = F.normalize(features_view2)
     
-    temperature = 0.07
     B, D = features_view1.shape
     device = features_view1.device
 
@@ -73,8 +72,17 @@ def loss_fn(args, model, features, mode='train'):
     loss_ce_sk = F.cross_entropy(sk_logits, label)
     loss_cls = loss_ce_photo + loss_ce_sk
     
-    loss_distill_photo = cross_loss(photo_features, photo_aug_features, args)
-    loss_distill_sk = cross_loss(sk_features, sk_aug_features, args)
+    if getattr(args, 'loss_protocol', 'repo') == 'paper':
+        # Equations 10-11: frozen augmented queries -> adapted clean keys.
+        target = torch.arange(len(label), device=pos_logits.device)
+        def consistency(clean, reference):
+            logits = F.normalize(reference.detach().float(), dim=-1) @ F.normalize(clean.float(), dim=-1).T
+            return F.cross_entropy(logits / args.temperature, target)
+        loss_distill_photo = consistency(photo_features, photo_aug_features)
+        loss_distill_sk = consistency(sk_features, sk_aug_features)
+    else:
+        loss_distill_photo = cross_loss(photo_features, photo_aug_features, args)
+        loss_distill_sk = cross_loss(sk_features, sk_aug_features, args)
     
     # loss_distill_photo = F.mse_loss(photo_features, photo_aug_features)
     # loss_distill_sk = F.mse_loss(sk_features, sk_aug_features)
@@ -82,15 +90,21 @@ def loss_fn(args, model, features, mode='train'):
     
     distance_fn = lambda x, y: 1.0 - F.cosine_similarity(x, y)
     triplet = nn.TripletMarginWithDistanceLoss(
-            distance_function=distance_fn, margin=0.2)
+            distance_function=distance_fn, margin=getattr(args, 'triplet_margin', 0.2))
     loss_triplet = triplet(sk_feature_norm, photo_features_norm, neg_features)
     
-    nt_xent_loss = nt_xent(photo_features, sk_features)
+    if getattr(args, 'loss_protocol', 'repo') == 'paper':
+        # Equations 13-15: bidirectional B x B sketch-photo contrastive loss.
+        logits = F.normalize(sk_features.float(), dim=-1) @ F.normalize(photo_features.float(), dim=-1).T
+        logits = logits / args.temperature
+        nt_xent_loss = 0.5 * (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target))
+    else:
+        nt_xent_loss = nt_xent(photo_features, sk_features, args.temperature)
     
     total_loss = (
-        loss_cls \
+        getattr(args, 'lambda_class', 1.0) * loss_cls \
         + loss_triplet \
-        + loss_distill \
+        + getattr(args, 'lambda_consistency', 1.0) * loss_distill \
         + nt_xent_loss
     )
     

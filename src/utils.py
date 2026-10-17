@@ -11,6 +11,7 @@ from torch.nn import functional as F
 
 from clip import clip
 from src.data_config import UNSEEN_CLASSES
+from src.dataset_protocol import category_split
 
 def retrieval_average_precision(preds, target, top_k = None):
     top_k = top_k or preds.shape[-1]
@@ -27,16 +28,8 @@ def retrieval_average_precision(preds, target, top_k = None):
 
 
 def get_all_categories(args, mode="train"):
-    all_categories = os.listdir(os.path.join(args.root, 'sketch'))
-    unseen_classes = UNSEEN_CLASSES[args.dataset]
-    if '.ipynb_checkpoints' in all_categories:
-        all_categories.remove('.ipynb_checkpoints')
-    if mode=="train":
-        all_categories = sorted(list(set(all_categories) - set(unseen_classes)))
-    else:
-        all_categories = sorted(unseen_classes)
-        # all_categories = sorted(list(set(all_categories)))
-    return all_categories
+    train, unseen = category_split(args)
+    return train if mode == 'train' else unseen
 
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -50,7 +43,9 @@ def init_weight(m):
 def load_clip_to_cpu(cfg, design_details=None):
     backbone_name = cfg.backbone
     url = clip._MODELS[backbone_name]
-    model_path = clip._download(url)
+    model_path = getattr(cfg, 'clip_weights', '') or clip._download(url)
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError(f'CLIP checkpoint does not exist: {model_path}')
 
     try:
         # loading JIT archive
@@ -58,7 +53,7 @@ def load_clip_to_cpu(cfg, design_details=None):
         state_dict = None
 
     except RuntimeError:
-        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     if design_details is None:
         design_details = {
             "trainer": "CoPrompt",
@@ -82,7 +77,7 @@ def retrieval_precision(preds, target, top_k):
         return torch.tensor(0.0, device=preds.device)
 
     if top_k is not None:
-        top = min(top_k, int(tot_pos))
+        top = min(top_k, len(sorted_target))
     else:
         top = int(tot_pos)
 

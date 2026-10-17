@@ -5,11 +5,11 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from torch.nn import functional as F
 from collections import defaultdict
-from torchmetrics.functional import retrieval_average_precision #, retrieval_precision
 
 from src.coprompt import MultiModalPromptLearner, Adapter, TextEncoder
-from src.utils import load_clip_to_cpu, get_all_categories, retrieval_precision, visualize_tsne
+from src.utils import load_clip_to_cpu, get_all_categories, visualize_tsne
 from src.losses import loss_fn
+from src.retrieval import retrieval_metrics
 from src.data_config import VISUALIZE_CLASSES, UNSEEN_CLASSES
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -18,11 +18,10 @@ def freeze_model(m):
     m.requires_grad_(False)
     
 def freeze_all_but_bn(m):
-    if not isinstance(m, torch.nn.LayerNorm):
-        if hasattr(m, 'weight') and m.weight is not None:
-            m.weight.requires_grad_(False)
-        if hasattr(m, 'bias') and m.bias is not None:
-            m.bias.requires_grad_(False)
+    # Include parameters named in_proj_weight, positional_embedding, etc.,
+    # rather than freezing only attributes literally called weight/bias.
+    for parameter in m.parameters(recurse=False):
+        parameter.requires_grad_(isinstance(m, torch.nn.LayerNorm))
             
 class CustomCLIP(nn.Module):
     def __init__(
@@ -44,10 +43,19 @@ class CustomCLIP(nn.Module):
         self.adapter_photo = Adapter(512, 4).to(clip_model.dtype)
         self.adapter_text = Adapter(512, 4).to(clip_model.dtype)
         
-        self.model_distill = clip_model_distill
+        # The text encoder has trainable LayerNorms. Give the frozen reference
+        # its own parameters so text updates cannot change its image features.
+        self.model_distill = copy.deepcopy(clip_model_distill)
+        freeze_model(self.model_distill)
+        self.model_distill.eval()
         self.image_adapter_m = 0.1
         self.text_adapter_m = 0.1
         self.saved_features = defaultdict(lambda: {"sketch": [], "photo": []})
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.model_distill.eval()
+        return self
     
     def get_logits(self, img_tensor, classnames, type='photo'):
         if type=='photo':
@@ -104,8 +112,9 @@ class CustomCLIP(nn.Module):
         sk_logits, sk_feature_norm, sk_feature = self.get_logits(sk_tensor, classnames, type='sketch')
         _, neg_feature, _ = self.get_logits(neg_tensor, classnames)
         
-        photo_aug_features = self.model_distill.encode_image(photo_aug_tensor)
-        sk_aug_features = self.model_distill.encode_image(sk_aug_tensor)
+        with torch.no_grad():
+            photo_aug_features = self.model_distill.encode_image(photo_aug_tensor)
+            sk_aug_features = self.model_distill.encode_image(sk_aug_tensor)
             
         return photo_features_norm, sk_feature_norm, photo_aug_features, sk_aug_features, \
             neg_feature, label, pos_logits, sk_logits, photo_feature, sk_feature
@@ -118,6 +127,7 @@ class ZS_SBIR(pl.LightningModule):
     def __init__(self, args, classname):
         super(ZS_SBIR, self).__init__()
         self.args = args
+        self.save_hyperparameters({'args': vars(args), 'classname': classname})
         self.classname = classname
         clip_model = load_clip_to_cpu(args)
         
@@ -140,12 +150,15 @@ class ZS_SBIR(pl.LightningModule):
         self.saved_features = defaultdict(lambda: {"sketch": [], "photo": []})
         
     def configure_optimizers(self):
-        optimizer = torch.optim.SGD(params=self.model.parameters(), lr=self.args.lr, weight_decay=1e-3, momentum=0.9)
+        optimizer = torch.optim.SGD(params=(p for p in self.model.parameters() if p.requires_grad),
+                                    lr=self.args.lr,
+                                    weight_decay=getattr(self.args, 'weight_decay', 1e-3),
+                                    momentum=getattr(self.args, 'momentum', 0.9))
         
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer=optimizer,
-            step_size=5,
-            gamma=0.1
+            step_size=getattr(self.args, 'lr_step_size', 5),
+            gamma=getattr(self.args, 'lr_gamma', 0.1)
         )
         
         return [optimizer] , [scheduler]
@@ -167,11 +180,11 @@ class ZS_SBIR(pl.LightningModule):
         image_tensor, label = batch
         if dataloader_idx == 0:
             feat = self.model.extract_feature(image_tensor, classname=classnames, type='sketch')
-            self.val_step_outputs_sk.append((feat, label))
+            self.val_step_outputs_sk.append((feat.detach().cpu(), label.detach().cpu()))
             modality = "sketch"
         else:
             feat = self.model.extract_feature(image_tensor, classname=classnames, type='photo')
-            self.val_step_outputs_ph.append((feat, label))
+            self.val_step_outputs_ph.append((feat.detach().cpu(), label.detach().cpu()))
             modality = "photo"
         
         if self.args.visualize:
@@ -199,8 +212,6 @@ class ZS_SBIR(pl.LightningModule):
             
             ## mAP category-level SBIR Metrics
             gallery = gallery_feat_all
-            ap = torch.zeros(len(query_feat_all))
-            precision = torch.zeros(len(query_feat_all))
             if self.args.dataset == "sketchy_2":
                 map_k = 200
                 p_k = 200
@@ -211,24 +222,14 @@ class ZS_SBIR(pl.LightningModule):
                 else:
                     p_k = 100
                     
-            for idx, sk_feat in enumerate(query_feat_all):
-                category = all_sketch_category[idx]
-                distance = self.distance_fn(sk_feat.unsqueeze(0), gallery)
-                target = torch.zeros(len(gallery), dtype=torch.bool, device=device)
-                target[np.where(all_photo_category == category)] = True
-                
-                if map_k != 0:
-                    top_k_actual = min(map_k, len(gallery)) 
-                    ap[idx] = retrieval_average_precision(distance.cpu(), target.cpu(), top_k=top_k_actual)
-                else: 
-                    ap[idx] = retrieval_average_precision(distance.cpu(), target.cpu())
-                    
-                precision[idx] = retrieval_precision(distance.cpu(), target.cpu(), top_k=p_k)
-                
-                
-            mAP = torch.mean(ap)
-            precision = torch.mean(precision)
+            mAP, precision = retrieval_metrics(
+                query_feat_all, gallery, all_sketch_category, all_photo_category,
+                map_k=map_k or None, precision_k=p_k,
+                query_batch_size=getattr(self.args, 'eval_query_batch_size', 32),
+                device=self.device,
+            )
             self.log("mAP", mAP, on_step=False, on_epoch=True)
+            self.log(f"P@{p_k}", precision, on_step=False, on_epoch=True)
             if self.global_step > 0:
                 self.best_metric = self.best_metric if  (self.best_metric > mAP.item()) else mAP.item()
             

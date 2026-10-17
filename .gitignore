@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+saved_models/
+tb_logs/
+csv_logs/
+*.log
+quickdraw_preflight.json

@@ -1,11 +1,11 @@
 import os
-import glob
 import numpy as np
 import torch
 import random
 from torchvision import transforms
 from PIL import Image, ImageOps
-from src.data_config import UNSEEN_CLASSES, GENERALIZED_CLASSES, VISUALIZE_CLASSES
+from src.data_config import GENERALIZED_CLASSES, VISUALIZE_CLASSES
+from src.dataset_protocol import category_split, image_paths
 
 def aumented_transform():
     transform_list = [
@@ -32,25 +32,18 @@ class TrainDataset(torch.utils.data.Dataset):
         self.transform1 = normal_transform()
         self.transform2 = aumented_transform()
         
-        unseen_classes = UNSEEN_CLASSES[self.args.dataset]
-
-        self.all_categories = os.listdir(os.path.join(self.args.root, 'sketch'))
-        self.all_categories = sorted(list(set(self.all_categories) - set(unseen_classes)))
-        
-        if self.args.use_classes != 104:
-            required_classes = list(GENERALIZED_CLASSES[self.args.dataset])
-            other_classes = [c for c in self.all_categories if c not in required_classes]
-            num_extra = self.args.use_classes - len(required_classes)
-            extra_classes = random.sample(other_classes, num_extra)
-            
-            self.all_categories = sorted(required_classes + extra_classes)
+        self.all_categories, _ = category_split(args)
+        if not 0 < proportion <= 1:
+            raise ValueError('proportion must be in (0, 1].')
 
         self.all_sketches_path = []
         self.all_photos_path = {}
 
         for category in self.all_categories:
-            sketch_paths = glob.glob(os.path.join(self.args.root, 'sketch', category, '*'))
-            photo_paths = glob.glob(os.path.join(self.args.root, 'photo', category, '*'))
+            sketch_paths = image_paths(os.path.join(self.args.root, 'sketch', category))
+            photo_paths = image_paths(os.path.join(self.args.root, 'photo', category))
+            if not sketch_paths or not photo_paths:
+                raise ValueError(f'Empty sketch/photo class: {category}')
             
             if self.proportion != 1:
                 num_sketch = max(1, int(len(sketch_paths) * self.proportion))
@@ -99,28 +92,35 @@ class ValidDataset(torch.utils.data.Dataset):
         self.gzs_perc = 0.2
         self.seed = 42
         
-        self.global_categories = os.listdir(os.path.join(self.args.root, 'sketch'))
+        self.global_categories, unseen = category_split(args)
         
         if self.args.visualize:
             self.unseen_classes = VISUALIZE_CLASSES[self.args.dataset]
             # self.unseen_classes = UNSEEN_CLASSES[self.args.dataset]
         else:
-            self.unseen_classes = UNSEEN_CLASSES[self.args.dataset]
+            self.unseen_classes = unseen
+
+        self.label_classes = sorted(set(self.unseen_classes) | set(self.global_categories))
             
         unseen_paths = []
         for category in self.unseen_classes:
             if self.mode == 'photo':
-                unseen_paths.extend(glob.glob(os.path.join(self.args.root, 'photo', category, '*')))
+                paths = image_paths(os.path.join(self.args.root, 'photo', category))
             else:
-                unseen_paths.extend(glob.glob(os.path.join(self.args.root, 'sketch', category, '*')))
+                paths = image_paths(os.path.join(self.args.root, 'sketch', category))
+            if not paths:
+                raise ValueError(f'Empty validation class ({mode}): {category}')
+            unseen_paths.extend(paths)
 
         self.paths = list(unseen_paths)
 
         if self.mode == 'photo':
             if self.args.gzs:
-                generalized_classes = GENERALIZED_CLASSES[self.args.dataset]
+                generalized_classes = GENERALIZED_CLASSES.get(self.args.dataset)
+                if generalized_classes is None:
+                    raise ValueError(f'No GZS protocol defined for {self.args.dataset}')
                 for category in generalized_classes:
-                    self.paths.extend(glob.glob(os.path.join(self.args.root, 'photo', category, '*')))
+                    self.paths.extend(image_paths(os.path.join(self.args.root, 'photo', category)))
             
     def __getitem__(self, index):
         filepath = self.paths[index]                
@@ -129,7 +129,8 @@ class ValidDataset(torch.utils.data.Dataset):
         image = ImageOps.pad(Image.open(filepath).convert('RGB'),  size=(self.args.max_size, self.args.max_size))
         image_tensor = self.transform(image)
         
-        return image_tensor, self.unseen_classes.index(category)
+        labels = self.unseen_classes if self.args.visualize else self.label_classes
+        return image_tensor, labels.index(category)
     
     def __len__(self):
         return len(self.paths)
